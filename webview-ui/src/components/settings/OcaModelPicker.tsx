@@ -74,7 +74,7 @@ const OcaModelPicker: React.FC<OcaModelPickerProps> = ({ isPopup, currentMode }:
 
 	const { selectedModelId, selectedModelInfo } = useMemo(() => {
 		return normalizeApiConfiguration(apiConfiguration, currentMode)
-	}, [apiConfiguration])
+	}, [apiConfiguration, currentMode])
 
 	useMount(() => {
 		refreshOcaModels(apiConfiguration?.ocaBaseUrl || "")

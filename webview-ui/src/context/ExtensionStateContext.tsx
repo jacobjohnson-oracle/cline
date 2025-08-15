@@ -85,6 +85,13 @@ interface ExtensionStateContextType extends ExtensionState {
 	ocaLogin: () => void
 	ocaLogout: () => void
 
+	// OCA Survey Proxy helpers
+	ocaStartSurveyProxy: () => Promise<{ port: number | undefined }>
+	ocaGenerateSurveyHtml: (
+		request: import("@shared/proto/index.cline").GenerateSurveyHtmlRequest,
+	) => Promise<import("@shared/proto/index.cline").GenerateSurveyHtmlResponse>
+	ocaStopSurveyProxy: () => Promise<any>
+
 	// Navigation state setters
 	setShowMcp: (value: boolean) => void
 	setMcpTab: (tab?: McpViewTab) => void
@@ -676,6 +683,20 @@ export const ExtensionStateContextProvider: React.FC<{
 			.catch((error: Error) => console.error("Failed to logout from OCA:", error))
 	}, [])
 
+	// ------------- OCA Survey Proxy helpers --------------
+	const ocaStartSurveyProxy = useCallback(async () => {
+		// Returns { port: number | undefined }
+		return OcaServiceClient.ocaStartSurveyProxySurvey(EmptyRequest.create({}))
+	}, [])
+
+	const ocaGenerateSurveyHtml = useCallback(async (request: import("@shared/proto/index.cline").GenerateSurveyHtmlRequest) => {
+		return OcaServiceClient.ocaGenerateSurveyHtml(request)
+	}, [])
+
+	const ocaStopSurveyProxy = useCallback(async () => {
+		return OcaServiceClient.ocaStopSurveyProxySurvey(EmptyRequest.create({}))
+	}, [])
+
 	const contextValue: ExtensionStateContextType = {
 		...state,
 		didHydrateState,
@@ -771,6 +792,11 @@ export const ExtensionStateContextProvider: React.FC<{
 		ocaLogout,
 		onRelinquishControl,
 		setUserInfo: (userInfo?: UserInfo) => setState((prevState) => ({ ...prevState, userInfo })),
+
+		// OCA Survey proxy helpers
+		ocaStartSurveyProxy,
+		ocaGenerateSurveyHtml,
+		ocaStopSurveyProxy,
 	}
 
 	return <ExtensionStateContext.Provider value={contextValue}>{children}</ExtensionStateContext.Provider>

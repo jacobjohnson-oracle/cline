@@ -21,6 +21,10 @@ interface OcaProviderProps {
 	currentMode: Mode
 }
 
+import React, { useMemo } from "react"
+import { GenerateSurveyHtmlRequest, GenerateSurveyHtmlResponse, OcaModelInfo } from "@shared/proto/index.cline"
+import { normalizeApiConfiguration } from "../utils/providerUtils"
+
 function isTokenValid(accessToken?: string, expiresAt?: number, bufferSec = 300) {
 	if (!accessToken || !expiresAt) return false
 	return expiresAt * 1000 > Date.now() + bufferSec * 1000
@@ -37,16 +41,112 @@ function InfoCard({ icon, children }: { icon: React.ReactNode; children: React.R
 	)
 }
 
+type OcaSurveyFormProps = {
+	surveyContent?: string
+	surveyId: string
+	modelId: string
+	modelVersion: string
+}
+const OcaSurveyForm: React.FC<OcaSurveyFormProps> = (props) => {
+	const { ocaStartSurveyProxy, ocaGenerateSurveyHtml, ocaStopSurveyProxy } = useExtensionState()
+	const [surveyServerPort, setSurveyServerPort] = React.useState<number | undefined>(undefined)
+	const [surveyUrl, setSurveyUrl] = React.useState<string | undefined>(undefined)
+	const [starting, setStarting] = React.useState(true)
+	const [error, setError] = React.useState<string | undefined>(undefined)
+	React.useEffect(() => {
+		let isCancelled = false
+		setStarting(true)
+		setError(undefined)
+		setSurveyUrl(undefined)
+		let localPort: number | undefined
+		// Step 1: Start server and get port
+		ocaStartSurveyProxy()
+			.then((response: { port: number | undefined }) => {
+				if (isCancelled) return
+				localPort = response.port
+				setSurveyServerPort(localPort)
+				// Step 2: Generate survey HTML at given port
+				const request = GenerateSurveyHtmlRequest.create({
+					surveyHtml: props.surveyContent || "",
+					surveyId: props.surveyId,
+					modelId: props.modelId,
+					client: "",
+					clientVersion: "",
+				})
+				return ocaGenerateSurveyHtml(request)
+			})
+			.then((htmlResp?: GenerateSurveyHtmlResponse) => {
+				if (isCancelled) return
+				if (!htmlResp) throw new Error("No HTML response returned")
+				setSurveyUrl(htmlResp.url || `http://localhost:${localPort}/survey`)
+			})
+			.catch((err: Error) => {
+				if (!isCancelled) {
+					setSurveyServerPort(undefined)
+					setSurveyUrl(undefined)
+					setError(typeof err === "object" && err && "message" in err ? (err as any).message : String(err))
+				}
+				console.error("Error in survey start/generate:", err)
+			})
+			.finally(() => {
+				if (!isCancelled) setStarting(false)
+			})
+		return () => {
+			isCancelled = true
+			ocaStopSurveyProxy().catch((err: Error) => {
+				console.error("Error stopping survey proxy:", err)
+			})
+		}
+		// Only rerun effect on actual prop changes, not context changes
+	}, [props.surveyContent, props.modelId, props.surveyId, props.modelVersion])
+	if (error) {
+		return (
+			<div style={{ color: "var(--vscode-errorForeground,#f13d3d)", padding: 32, textAlign: "center", fontSize: 15 }}>
+				Error loading survey: {error}
+			</div>
+		)
+	}
+	if (starting || !surveyUrl) {
+		return <div style={{ padding: 32, textAlign: "center" }}>Loading survey…</div>
+	}
+	return (
+		<iframe
+			src={surveyUrl}
+			title="OCA Survey"
+			width="100%"
+			height="100%"
+			style={{
+				wordBreak: "break-word",
+				background: "var(--vscode-editorWidget-foreground, #252526)",
+				color: "var(--vscode-editorWidget-background, #cccccc)",
+			}}
+			allow="clipboard-write"
+			// Optionally, you could pass data- attributes if the iframe is same-origin and picks them up
+		/>
+	)
+}
+
 /**
  * The Oca provider configuration component
  */
 export const OcaProvider = ({ isPopup, currentMode }: OcaProviderProps) => {
 	const { apiConfiguration, ocaRefreshToken, ocaLogin, ocaLogout } = useExtensionState()
 	const { handleFieldChange } = useApiConfigurationHandlers()
+	const [showSurvey, setShowSurvey] = React.useState(false)
+	const { selectedModelId, selectedModelInfo } = useMemo(() => {
+		return normalizeApiConfiguration(apiConfiguration, currentMode)
+	}, [apiConfiguration])
 
 	useMount(() => {
 		if (apiConfiguration?.ocaAccessToken !== "logout") ocaRefreshToken()
 	})
+
+	const handleSurveyClick = () => {
+		setShowSurvey(true)
+	}
+	const closeSurvey = () => {
+		setShowSurvey(false)
+	}
 
 	return (
 		<div>
@@ -117,6 +217,140 @@ export const OcaProvider = ({ isPopup, currentMode }: OcaProviderProps) => {
 							For external customers, contact your IT admin to provision Oracle Code Assist as a provider.
 						</div>
 					</InfoCard>
+					{/* FEEDBACK CARD */}
+					<InfoCard
+						icon={
+							<svg width="20" height="20" viewBox="0 0 36 35" fill="none" aria-hidden role="img">
+								<g clipPath="url(#clip0)">
+									<path
+										d="M20 13.5991C20 14.672 19.1046 15.5418 18 15.5418C16.8954 15.5418 16 14.672 16 13.5991C16 12.5261 16.8954 11.6563 18 11.6563C19.1046 11.6563 20 12.5261 20 13.5991Z"
+										fill="none"
+										stroke="white"
+										strokeWidth="1.25"
+									/>
+									<path
+										d="M10 15.5418C11.1046 15.5418 12 14.672 12 13.5991C12 12.5261 11.1046 11.6563 10 11.6563C8.89543 11.6563 8 12.5261 8 13.5991C8 14.672 8.89543 15.5418 10 15.5418Z"
+										fill="none"
+										stroke="white"
+										strokeWidth="1.25"
+									/>
+									<path
+										d="M28 13.5991C28 14.672 27.1046 15.5418 26 15.5418C24.8954 15.5418 24 14.672 24 13.5991C24 12.5261 24.8954 11.6563 26 11.6563C27.1046 11.6563 28 12.5261 28 13.5991Z"
+										fill="none"
+										stroke="white"
+										strokeWidth="1.25"
+									/>
+									<path
+										fillRule="evenodd"
+										clipRule="evenodd"
+										d="M0 0V25.2554H10V34.4L19.4142 25.2554H36V0H0ZM2 23.3127V1.94272H34V23.3127H18.5858L12 29.7099V23.3127H2Z"
+										fill="none"
+										stroke="white"
+										strokeWidth="1.25"
+									/>
+								</g>
+								<defs>
+									<clipPath id="clip0">
+										<rect width="36" height="35" fill="white" />
+									</clipPath>
+								</defs>
+							</svg>
+						}>
+						<div
+							style={{
+								display: "flex",
+								flexDirection: "column",
+								alignItems: "center", // center title and button
+								width: "100%",
+							}}>
+							<div
+								style={{
+									fontSize: 14,
+									color: "var(--vscode-descriptionForeground)",
+									fontWeight: 600,
+									marginBottom: 18,
+									marginTop: 2,
+								}}>
+								Help us improve!
+							</div>
+							<VSCodeButton
+								style={{
+									fontSize: 14,
+									borderRadius: 22,
+									fontWeight: 500,
+									background: "var(--vscode-button-background, #0078d4)",
+									color: "var(--vscode-button-foreground, #fff)",
+									minWidth: 0,
+									margin: 0,
+								}}
+								onClick={handleSurveyClick}>
+								Provide feedback
+							</VSCodeButton>
+						</div>
+					</InfoCard>
+				</div>
+			)}
+			{showSurvey && (
+				<div
+					style={{
+						position: "fixed",
+						zIndex: 2000,
+						left: 0,
+						top: 10,
+						width: "100%",
+						height: "100%",
+						background: "rgba(32,32,32,0.66)",
+						display: "flex",
+						alignItems: "center",
+						justifyContent: "center",
+					}}
+					onClick={closeSurvey}>
+					<div
+						style={{
+							background: "#222",
+							padding: 0,
+							borderRadius: 8,
+							minWidth: 350,
+							minHeight: 200,
+							width: "100%",
+							height: "100%",
+							overflow: "auto",
+							color: "var(--vscode-editorWidget-foreground, #cccccc)",
+							fontSize: 13,
+							position: "relative",
+						}}
+						onClick={(e) => e.stopPropagation()}>
+						<button
+							onClick={closeSurvey}
+							style={{
+								position: "absolute",
+								border: "none",
+								right: 16,
+								top: 16,
+								width: 40,
+								height: 40,
+								background: "#fff",
+								color: "#0078d7",
+								fontSize: 28,
+								fontWeight: "bold",
+								cursor: "pointer",
+								display: "flex",
+								alignItems: "center",
+								justifyContent: "center",
+								zIndex: 10,
+								transition: "background 0.2s, color 0.2s, border 0.2s",
+							}}
+							aria-label="Close"
+							title="Close">
+							×
+						</button>
+						<OcaSurveyForm
+							surveyContent={(selectedModelInfo as OcaModelInfo)?.surveyContent}
+							surveyId={(selectedModelInfo as OcaModelInfo)?.surveyId || "unknown-survey-id"}
+							modelId={selectedModelId}
+							modelVersion={selectedModelId}
+						/>
+					</div>
 				</div>
 			)}
 		</div>

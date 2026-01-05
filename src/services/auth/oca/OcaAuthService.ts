@@ -1,5 +1,5 @@
 import { type EmptyRequest, String as ProtoString } from "@shared/proto/cline/common"
-import { OcaAuthState, OcaUserInfo } from "@shared/proto/cline/oca_account"
+import { OcaAuthState, OcaDeviceAuthStartResponse, OcaUserInfo } from "@shared/proto/cline/oca_account"
 import type { Controller } from "@/core/controller"
 import { getRequestRegistry, type StreamingResponseHandler } from "@/core/controller/grpc-handler"
 import { AuthHandler } from "@/hosts/external/AuthHandler"
@@ -282,5 +282,13 @@ export class OcaAuthService {
 			}
 		})
 		await Promise.all(promises)
+	}
+
+	async startDeviceAuth(controller: Controller): Promise<OcaDeviceAuthStartResponse> {
+		return await this.requireProvider().startDeviceAuth(controller)
+	}
+
+	async pollDeviceAuth(controller: Controller, deviceCode: string): Promise<OcaAuthState> {
+		return await this.requireProvider().pollDeviceAuth(controller, deviceCode)
 	}
 }

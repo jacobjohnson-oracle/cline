@@ -1,4 +1,4 @@
-import { OcaAuthState, OcaUserInfo } from "@shared/proto/cline/oca_account"
+import { OcaAuthState, OcaDeviceAuthStartResponse, OcaUserInfo } from "@shared/proto/cline/oca_account"
 import axios from "axios"
 import { jwtDecode } from "jwt-decode"
 import { Controller } from "@/core/controller"
@@ -229,5 +229,89 @@ export class OcaAuthProvider {
 	clearAuth(controller: Controller): void {
 		controller.stateManager.setSecret("ocaApiKey", undefined)
 		controller.stateManager.setSecret("ocaRefreshToken", undefined)
+	}
+
+	async startDeviceAuth(controller: Controller): Promise<OcaDeviceAuthStartResponse> {
+		const ocaMode = controller.stateManager.getGlobalSettingsKey("ocaMode") || "internal"
+		const { idcs_url, client_id } = ocaMode === "internal" ? this._config.internal : this._config.external
+
+		const discovery = await axios.get(`${idcs_url}/.well-known/openid-configuration`, getAxiosSettings())
+		const deviceEndpoint = discovery.data.device_authorization_endpoint // Seems like this may not work... device auth endpoint settings are not in this object. may need to set url manually
+
+		const params = {
+			client_id,
+			scope: this._config[ocaMode].scopes,
+		}
+
+		const response = await axios.post(deviceEndpoint, new URLSearchParams(params), {
+			headers: { "Content-Type": "application/x-www-form-urlencoded" },
+			...getAxiosSettings(),
+		})
+
+		// Store device code for polling
+		this.deviceCodes.set(response.data.device_code, {
+			...response.data,
+			createdAt: Date.now(),
+		})
+
+		return {
+			device_code: response.data.device_code,
+			user_code: response.data.user_code,
+			verification_uri: response.data.verification_uri,
+			verification_uri_complete: response.data.verification_uri_complete,
+			expires_in: response.data.expires_in,
+			interval: response.data.interval || 5,
+		}
+	}
+
+	async pollDeviceAuth(controller: Controller, deviceCode: string): Promise<OcaAuthState> {
+		const deviceInfo = this.deviceCodes.get(deviceCode)
+		if (!deviceInfo) {
+			throw new Error("Invalid or expired device code")
+		}
+
+		const ocaMode = controller.stateManager.getGlobalSettingsKey("ocaMode") || "internal"
+		const { idcs_url, client_id } = ocaMode === "internal" ? this._config.internal : this._config.external
+
+		const discovery = await axios.get(`${idcs_url}/.well-known/openid-configuration`, getAxiosSettings())
+		const tokenEndpoint = discovery.data.token_endpoint
+
+		const params = {
+			grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+			device_code: deviceCode,
+			client_id,
+		}
+
+		try {
+			const response = await axios.post(tokenEndpoint, new URLSearchParams(params), {
+				headers: { "Content-Type": "application/x-www-form-urlencoded" },
+				...getAxiosSettings(),
+			})
+
+			// Clean up device code
+			this.deviceCodes.delete(deviceCode)
+
+			// Store tokens and return auth state
+			const accessToken = response.data.access_token
+			const refreshToken = response.data.refresh_token
+
+			controller.stateManager.setSecret("ocaRefreshToken", refreshToken)
+			controller.stateManager.setSecret("ocaApiKey", accessToken)
+
+			const userInfo = await this.getUserAccountInfo(accessToken)
+			return { user: userInfo, apiKey: accessToken }
+		} catch (error) {
+			if (error.response?.data?.error === "authorization_pending") {
+				throw new Error("authorization_pending")
+			}
+			if (error.response?.data?.error === "slow_down") {
+				throw new Error("slow_down")
+			}
+			if (error.response?.data?.error === "expired_token") {
+				this.deviceCodes.delete(deviceCode)
+				throw new Error("expired_token")
+			}
+			throw error
+		}
 	}
 }

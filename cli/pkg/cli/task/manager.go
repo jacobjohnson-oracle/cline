@@ -1279,6 +1279,11 @@ func (m *Manager) GetRenderer() *display.Renderer {
 	return m.renderer
 }
 
+// GetSystemRenderer returns the system message renderer
+func (m *Manager) GetSystemRenderer() *display.SystemMessageRenderer {
+	return m.systemRenderer
+}
+
 // GetCurrentMode returns the current plan/act mode
 func (m *Manager) GetCurrentMode() string {
 	m.mu.RLock()
@@ -1350,6 +1355,8 @@ func (m *Manager) UpdateTaskAutoApprovalAction(ctx context.Context, actionKey st
 
 	return nil
 }
+
+
 
 // Cleanup cleans up resources
 func (m *Manager) Cleanup() {

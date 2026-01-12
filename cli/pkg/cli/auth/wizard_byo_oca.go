@@ -4,28 +4,44 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/charmbracelet/huh"
+	"github.com/cline/cli/pkg/cli/display"
 	"github.com/cline/cli/pkg/cli/global"
 	"github.com/cline/cli/pkg/cli/task"
+	"github.com/cline/grpc-go/client"
 	"github.com/cline/grpc-go/cline"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 )
 
-// OcaConfig holds Oracle Code Assist (OCA) configuration fields
-type OcaConfig struct {
-	BaseURL string
-	Mode    string
+var debugAuth = strings.ToLower(os.Getenv("CLINE_AUTH_DEBUG")) == "1"
+
+func dbg(format string, a ...any) {
+	if debugAuth {
+		log.Printf("[OCA-CLI] "+format, a...)
+	}
 }
 
-// PromptForOcaConfig displays a form for OCA configuration (base URL and mode)
+// OcaConfig holds Oracle Code Assist (OCA) configuration fields
+type OcaConfig struct {
+	BaseURL  string
+	Mode     string
+	OcaAuthMode cline.OcaAuthMode
+}
+
+// PromptForOcaConfig displays a form for OCA configuration (base URL, mode, and browser usage)
 func PromptForOcaConfig(ctx context.Context, manager *task.Manager) (*OcaConfig, error) {
 	config := &OcaConfig{}
 	var mode string
+
+	// Default to using the browser for authentication
+	config.OcaAuthMode = cline.OcaAuthMode_BROWSER
 
 	// Collect optional settings
 	configForm := huh.NewForm(
@@ -43,6 +59,15 @@ func PromptForOcaConfig(ctx context.Context, manager *task.Manager) (*OcaConfig,
 					huh.NewOption("External", "external"),
 				).
 				Value(&mode),
+
+			huh.NewSelect[cline.OcaAuthMode]().
+				Title("Choose authentication method").
+				Description("Select how you want to authenticate with OCA").
+				Options(
+					huh.NewOption("Browser (opens automatically)", cline.OcaAuthMode_BROWSER),
+					huh.NewOption("Device Code (display code to enter)", cline.OcaAuthMode_DEVICE_CODE),
+				).
+				Value(&config.OcaAuthMode),
 		),
 	)
 
@@ -74,6 +99,9 @@ func ApplyOcaConfig(ctx context.Context, manager *task.Manager, config *OcaConfi
 	if config.Mode != "" {
 		optionalFields.Mode = proto.String(config.Mode)
 	}
+
+	// Always set AuthMode
+	optionalFields.AuthMode = &config.OcaAuthMode
 
 	// Apply all fields to the config
 	setOcaOptionalFields(apiConfig, optionalFields)
@@ -158,6 +186,7 @@ func (l *OcaAuthStatusListener) readStream() {
 	for {
 		select {
 		case <-l.ctx.Done():
+			dbg("readStream: ctx done: %v", l.ctx.Err())
 			return
 		default:
 			state, err := l.stream.Recv()
@@ -167,11 +196,19 @@ func (l *OcaAuthStatusListener) readStream() {
 					// Treat as error to notify waiters
 					err = fmt.Errorf("OCA auth status stream closed")
 				}
+				dbg("readStream: recv error: %v", err)
 				select {
 				case l.errCh <- err:
 				case <-l.ctx.Done():
 				}
 				return
+			}
+
+			dbg("recv: user=%v deviceAuth=%v", state.User != nil, state.DeviceAuth != nil)
+			if state.DeviceAuth != nil {
+				da := state.DeviceAuth
+				dbg("deviceAuth payload: uri=%q complete=%q code=%q expiresIn=%d interval=%d",
+					da.VerificationUri, da.VerificationUriComplete, da.UserCode, da.ExpiresIn, da.Interval)
 			}
 
 			l.mu.Lock()
@@ -181,6 +218,7 @@ func (l *OcaAuthStatusListener) readStream() {
 			// Notify first event waiters
 			l.firstEventOnce.Do(func() { close(l.firstEventCh) })
 
+			dbg("enqueue to updatesCh")
 			select {
 			case l.updatesCh <- state:
 			case <-l.ctx.Done():
@@ -220,6 +258,43 @@ func (l *OcaAuthStatusListener) IsAuthenticated() bool {
 	return isOCAStateAuthenticated(l.lastState)
 }
 
+// WaitForDeviceAuthStart waits for device auth start details to be received
+func (l *OcaAuthStatusListener) WaitForDeviceAuthStart(timeout time.Duration) (*cline.OcaDeviceAuthStartResponse, error) {
+	dbg("WaitForDeviceAuthStart(timeout=%s)", timeout)
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	// Check if we already have device auth details
+	l.mu.RLock()
+	hasDeviceAuth := l.lastState != nil && l.lastState.DeviceAuth != nil
+	dbg("lastState already had deviceAuth: %v", hasDeviceAuth)
+	if hasDeviceAuth {
+		response := l.lastState.DeviceAuth
+		l.mu.RUnlock()
+		return response, nil
+	}
+	l.mu.RUnlock()
+
+	for {
+		select {
+		case <-timer.C:
+			dbg("timer fired; no deviceAuth received")
+			return nil, fmt.Errorf("timeout waiting for device auth start details")
+		case <-l.ctx.Done():
+			dbg("ctx done: %v", l.ctx.Err())
+			return nil, fmt.Errorf("OCA auth listener cancelled")
+		case err := <-l.errCh:
+			dbg("errCh received: %v", err)
+			return nil, fmt.Errorf("OCA authentication stream error: %w", err)
+		case state := <-l.updatesCh:
+			dbg("updatesCh recv; deviceAuth=%v", state.DeviceAuth != nil)
+			if state.DeviceAuth != nil {
+				return state.DeviceAuth, nil
+			}
+		}
+	}
+}
+
 // WaitForAuthentication waits until OCA authentication succeeds or timeout occurs
 func (l *OcaAuthStatusListener) WaitForAuthentication(timeout time.Duration) error {
 	timer := time.NewTimer(timeout)
@@ -249,6 +324,77 @@ func (l *OcaAuthStatusListener) WaitForAuthentication(timeout time.Duration) err
 // Stop closes the stream and cleans up resources
 func (l *OcaAuthStatusListener) Stop() {
 	l.cancel()
+}
+
+// PrintDeviceAuthIfPresent prints device code details if present in latest state.
+// If wait > 0, it will wait up to that duration for a DeviceAuth event on updatesCh.
+// Returns true if device auth was printed, false otherwise.
+func (l *OcaAuthStatusListener) PrintDeviceAuthIfPresent(wait time.Duration, sys *display.SystemMessageRenderer) bool {
+	dbg("PrintDeviceAuthIfPresent(wait=%s)", wait)
+	// 1) Try latest state
+	l.mu.RLock()
+	hasDeviceAuth := l.lastState != nil && l.lastState.DeviceAuth != nil
+	dbg("lastState present=%v deviceAuth=%v", l.lastState != nil, hasDeviceAuth)
+	if hasDeviceAuth {
+		resp := l.lastState.DeviceAuth
+		l.mu.RUnlock()
+		if sys != nil {
+			_ = sys.RenderOcaDeviceAuth(resp)
+		} else {
+			printDeviceAuth(resp)
+		}
+		dbg("printed device code from lastState")
+		return true
+	}
+	l.mu.RUnlock()
+
+	if wait <= 0 {
+		dbg("no wait specified, returning false")
+		return false
+	}
+
+	// 2) Give a small grace period to catch an in-flight event
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	for {
+		select {
+		case <-timer.C:
+			dbg("timer fired; no deviceAuth received")
+			return false
+		case state := <-l.updatesCh:
+			dbg("updatesCh received; deviceAuth=%v", state.DeviceAuth != nil)
+			// Always keep lastState up to date for other listeners
+			l.mu.Lock()
+			l.lastState = state
+			l.mu.Unlock()
+			if state.DeviceAuth != nil {
+				if sys != nil {
+					dbg("printing using renderer")
+					_ = sys.RenderOcaDeviceAuth(state.DeviceAuth)
+				} else {
+					dbg("printing using printf")
+					printDeviceAuth(state.DeviceAuth)
+				}
+				dbg("printed device code from updatesCh")
+				return true
+			}
+		case err := <-l.errCh:
+			dbg("errCh received: %v", err)
+			_ = err // ignore for this helper; caller handles errors elsewhere
+			return false
+		case <-l.ctx.Done():
+			dbg("ctx done: %v", l.ctx.Err())
+			return false
+		}
+	}
+}
+
+func printDeviceAuth(resp *cline.OcaDeviceAuthStartResponse) {
+	fmt.Println("\nOCA device authentication required.")
+	fmt.Printf("Visit: %s\n", resp.VerificationUri)
+	fmt.Printf("Enter code: %s\n", resp.UserCode)
+	fmt.Printf("Code expires in: %d seconds\n", resp.ExpiresIn)
+	fmt.Println("Waiting for you to complete OCA authentication...")
 }
 
 func isOCAStateAuthenticated(state *cline.OcaAuthState) bool {
@@ -317,16 +463,25 @@ func GetLatestOCAState(ctx context.Context, timeout time.Duration) (*cline.OcaAu
 }
 
 // ensureOcaAuthenticated initiates OCA login (if needed) and waits for success using the singleton listener
-func ensureOcaAuthenticated(ctx context.Context) error {
+func ensureOcaAuthenticated(ctx context.Context, authMode cline.OcaAuthMode, sys *display.SystemMessageRenderer) error {
+	dbg("ensureOcaAuthenticated: mode=%v", authMode)
 	// Ensure listener exists
 	listener, err := GetOcaAuthListener(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to initialize OCA auth listener: %w", err)
 	}
 
+	// Best-effort: if Core already pushed a device-code re-auth prompt, display it.
+	// Use a short wait to catch in-flight events (e.g., 2 seconds).
+	dbg("calling PrintDeviceAuthIfPresent preflight")
+	dbg("sys is %w", sys)
+	_ = listener.PrintDeviceAuthIfPresent(2 * time.Second, sys)
+
 	// Briefly wait for first event to know current state
+	dbg("calling WaitForFirstEvent")
 	_ = listener.WaitForFirstEvent(1 * time.Second)
 
+	dbg("IsAuthenticated=%v", listener.IsAuthenticated())
 	// If already authenticated, nothing to do
 	if listener.IsAuthenticated() {
 		fmt.Println("✓ OCA authentication already active.")
@@ -343,6 +498,15 @@ func ensureOcaAuthenticated(ctx context.Context) error {
 	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
+	switch authMode {
+		case cline.OcaAuthMode_DEVICE_CODE:
+			return deviceCodeAuthentication(client, waitCtx, listener, sys)
+		default:
+			return browserAuthentication(client, waitCtx, listener)
+	}
+}
+
+func browserAuthentication(client *client.ClineClient, waitCtx context.Context, listener* OcaAuthStatusListener) error {
 	// Initiate login (opens the browser with a callback URL from Cline Core)
 	response, err := client.Ocaaccount.OcaAccountLoginClicked(waitCtx, &cline.EmptyRequest{})
 	if err != nil {
@@ -360,7 +524,27 @@ func ensureOcaAuthenticated(ctx context.Context) error {
 	if err := listener.WaitForAuthentication(5 * time.Minute); err != nil {
 		return err
 	}
+	return nil
+}
 
-	fmt.Println("✓ OCA authentication successful!")
+func deviceCodeAuthentication(client *client.ClineClient, waitCtx context.Context, listener* OcaAuthStatusListener, sys *display.SystemMessageRenderer) error {
+	// Use device code authentication - initiate the flow
+	_, err := client.Ocaaccount.OcaStartDeviceAuth(waitCtx, &cline.EmptyRequest{})
+	if err != nil {
+		return fmt.Errorf("failed to initiate OCA device authentication: %w", err)
+	}
+
+	// Wait for device auth details to be sent over the stream
+	response, err := listener.WaitForDeviceAuthStart(10 * time.Second)
+	if err != nil {
+		return fmt.Errorf("failed to receive device auth details: %w", err)
+	}
+	
+	printDeviceAuth(response)
+
+	// Block until authenticated or timeout
+	if err := listener.WaitForAuthentication(time.Duration(response.ExpiresIn) * time.Second); err != nil {
+		return err
+	}
 	return nil
 }

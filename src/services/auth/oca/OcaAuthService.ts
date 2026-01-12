@@ -19,6 +19,8 @@ export class OcaAuthService {
 	protected _controller: Controller | null = null
 	protected _refreshInFlight: Promise<void> | null = null
 	protected _interactiveLoginPending: boolean = false
+	protected _deviceAuth: OcaDeviceAuthStartResponse | null = null // TODO: Simplify this - just set within _ocaAuthState
+	protected _devicePollingActive: boolean = false
 	protected _activeAuthStatusUpdateSubscriptions = new Set<{
 		controller: Controller
 		responseStream: StreamingResponseHandler<OcaAuthState>
@@ -48,9 +50,7 @@ export class OcaAuthService {
 	 * Safe to call multiple times; updates controller on existing instance.
 	 */
 	public static initialize(controller: Controller): OcaAuthService {
-		if (!OcaAuthService.instance) {
-			OcaAuthService.instance = new OcaAuthService()
-		}
+		OcaAuthService.instance ??= new OcaAuthService()
 		OcaAuthService.instance._controller = controller
 		return OcaAuthService.instance
 	}
@@ -60,7 +60,7 @@ export class OcaAuthService {
 	 * Throws if not initialized. Call initialize(controller) first.
 	 */
 	public static getInstance(): OcaAuthService {
-		if (!OcaAuthService.instance || !OcaAuthService.instance._controller) {
+		if (!OcaAuthService.instance?._controller) {
 			throw new Error("OcaAuthService not initialized. Call OcaAuthService.initialize(controller) first.")
 		}
 		return OcaAuthService.instance
@@ -79,7 +79,10 @@ export class OcaAuthService {
 				email: userInfo?.email,
 			})
 		}
-		return OcaAuthState.create({ user })
+		return OcaAuthState.create({
+			user,
+			deviceAuth: this._deviceAuth ?? undefined,
+		})
 	}
 
 	public get isAuthenticated(): boolean {
@@ -105,7 +108,7 @@ export class OcaAuthService {
 	async getAuthToken(): Promise<string | null> {
 		this.requireController()
 		// Ensure we have a state with a token
-		if (!this._ocaAuthState || !this._ocaAuthState.apiKey) {
+		if (!this._ocaAuthState?.apiKey) {
 			await this.refreshAuthState()
 			return this._ocaAuthState?.apiKey ?? null
 		}
@@ -128,11 +131,10 @@ export class OcaAuthService {
 		return this._ocaAuthState?.apiKey ?? null
 	}
 
-	async createAuthRequest(): Promise<ProtoString> {
+	async browserAuth(): Promise<ProtoString> {
 		this.requireController()
 		if (this._authenticated) {
 			this.sendAuthStatusUpdate()
-			return ProtoString.create({ value: "Already authenticated" })
 		}
 		const ocaMode = this.requireController().stateManager.getGlobalSettingsKey("ocaMode") || "internal"
 		const idcsUrl = ocaMode === "external" ? this._config.external.idcs_url : this._config.internal.idcs_url
@@ -143,7 +145,7 @@ export class OcaAuthService {
 		const authHandler = AuthHandler.getInstance()
 		authHandler.setEnabled(true)
 		const callbackUrl = `${await authHandler.getCallbackUrl()}/auth/oca`
-		const authUrl = this.requireProvider().getAuthUrl(callbackUrl!, ocaMode)
+		const authUrl = this.requireProvider().getAuthUrl(callbackUrl, ocaMode)
 		const authUrlString = authUrl?.toString() || ""
 		if (!authUrlString) {
 			throw new Error("Failed to generate authentication URL")
@@ -157,7 +159,11 @@ export class OcaAuthService {
 			this.clearAuth()
 			this._ocaAuthState = null
 			this._authenticated = false
+			this._deviceAuth = null
+			this._devicePollingActive = false // Stop any active polling
 			await this.sendAuthStatusUpdate()
+
+			console.log("[OcaAuthService.handleDeauth] Deauth completed")
 		} catch (error) {
 			console.error("Error signing out:", error)
 			throw error
@@ -196,42 +202,113 @@ export class OcaAuthService {
 				return
 			}
 			console.warn("No user found after restoring auth token")
-			await this.kickstartInteractiveLoginAsFallback()
+			await this.authenticate()
 		} catch (error) {
 			console.error("Error restoring auth token:", error)
-			await this.kickstartInteractiveLoginAsFallback(error)
+			await this.authenticate(error)
 		}
 	}
 
-	private async kickstartInteractiveLoginAsFallback(_err?: unknown): Promise<void> {
+	private async authenticate(_err?: unknown): Promise<void> {
 		// Clear any stale secrets and broadcast unauthenticated state
 		this.clearAuth()
 		this._authenticated = false
 		this._ocaAuthState = null
-		await this.sendAuthStatusUpdate()
+		this._deviceAuth = null
+		await this.sendAuthStatusUpdate() // Not sure why this is needed?
 
-		// Avoid repeated/looping login attempts
-		if (this._interactiveLoginPending) {
-			return
-		}
-		this._interactiveLoginPending = true
 		try {
-			// Kickstart interactive login (opens browser)
-			await this.createAuthRequest()
-			// Wait up to 60 seconds for user to complete login
-			const timeoutMs = 60_000
-			const pollMs = 250
-			const start = Date.now()
-			while (!this._authenticated && Date.now() - start < timeoutMs) {
-				await new Promise((r) => setTimeout(r, pollMs))
-			}
-			if (!this._authenticated) {
-				console.warn("Interactive OCA login timed out after 120 seconds")
+			const ctrl = this.requireController()
+			const mode = ctrl.stateManager.getGlobalSettingsKey("ocaAuthMode") ?? 0
+
+			console.log(`user has configured ${mode === 0 ? "browser" : "device code"}`)
+
+			if (mode === 0) {
+				// Use browser authentication (default)
+				await this.browserAuth()
+			} else if (mode === 1) {
+				await this.deviceCodeAuth()
+			} else {
+				throw new Error(`Unsupported OCA auth mode: ${mode}`)
 			}
 		} catch (e) {
 			console.error("Failed to initiate interactive OCA login:", e)
 		} finally {
 			this._interactiveLoginPending = false
+		}
+	}
+
+	async deviceCodeAuth(): Promise<void> {
+		if (this._devicePollingActive) {
+			console.log("already polling...")
+			return // Already polling
+		}
+
+		const ctrl = this.requireController()
+
+		// Start device auth and store the response
+		const start = await this.requireProvider().requestDeviceAuth(ctrl)
+		this._deviceAuth = start
+
+		console.log(`device code is ${start.deviceCode}`)
+
+		// Emit the device code details to listeners
+		await this.sendAuthStatusUpdate()
+
+		// Set polling active before starting background task
+		this._devicePollingActive = true
+
+		try {
+			await this.pollDeviceAuthLoop(start)
+		} catch (error) {
+			console.error("Device auth polling failed:", error)
+			this._deviceAuth = null
+			await this.sendAuthStatusUpdate()
+		} finally {
+			this._devicePollingActive = false
+		}
+	}
+
+	private async pollDeviceAuthLoop(deviceAuthStart: OcaDeviceAuthStartResponse): Promise<void> {
+		const ctrl = this.requireController()
+		const expiresAt = Date.now() + deviceAuthStart.expiresIn * 1000
+		let intervalMs = Math.max(5, deviceAuthStart.interval || 5) * 1000
+
+		while (this._devicePollingActive && Date.now() < expiresAt && !this._authenticated) {
+			try {
+				const result = await this.requireProvider().pollDeviceAuth(ctrl, deviceAuthStart.deviceCode)
+				// Success!
+				this._ocaAuthState = result
+				this._authenticated = true
+				this._deviceAuth = null
+				await this.sendAuthStatusUpdate()
+				break
+			} catch (error: any) {
+				const errorMessage = error?.message || String(error)
+				if (errorMessage === "authorization_pending") {
+					// Continue polling
+				} else if (errorMessage === "slow_down") {
+					// Increase interval as requested
+					intervalMs += 5000
+				} else {
+					// Terminal error (expired, invalid, etc.)
+					console.warn("Device auth polling terminated:", errorMessage)
+					this._deviceAuth = null
+					// Optionally emit error to listeners
+					await this.sendAuthStatusUpdate()
+					break
+				}
+			}
+
+			// Wait before next poll
+			await new Promise((resolve) => setTimeout(resolve, intervalMs))
+		}
+
+		// Cleanup if we exit due to timeout
+		if (!this._authenticated) {
+			console.warn("Device auth timed out")
+			this._deviceAuth = null
+			await this.sendAuthStatusUpdate()
 		}
 	}
 
@@ -282,13 +359,5 @@ export class OcaAuthService {
 			}
 		})
 		await Promise.all(promises)
-	}
-
-	async startDeviceAuth(controller: Controller): Promise<OcaDeviceAuthStartResponse> {
-		return await this.requireProvider().startDeviceAuth(controller)
-	}
-
-	async pollDeviceAuth(controller: Controller, deviceCode: string): Promise<OcaAuthState> {
-		return await this.requireProvider().pollDeviceAuth(controller, deviceCode)
 	}
 }

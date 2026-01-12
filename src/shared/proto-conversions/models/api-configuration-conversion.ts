@@ -653,6 +653,7 @@ export function convertProtoToApiConfiguration(protoConfig: ProtoApiConfiguratio
 		difyBaseUrl: protoConfig.difyBaseUrl,
 		ocaBaseUrl: protoConfig.ocaBaseUrl,
 		ocaMode: protoConfig.ocaMode,
+		ocaAuthMode: protoConfig.ocaAuthMode,
 		aihubmixApiKey: protoConfig.aihubmixApiKey,
 		aihubmixBaseUrl: protoConfig.aihubmixBaseUrl,
 		aihubmixAppCode: protoConfig.aihubmixAppCode,

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/cline/cli/pkg/cli/auth"
 	"github.com/cline/cli/pkg/cli/config"
 	"github.com/cline/cli/pkg/cli/global"
 	"github.com/cline/cli/pkg/cli/task"
@@ -86,6 +87,11 @@ func ensureTaskManager(ctx context.Context, address string) error {
 			fmt.Printf("Warning: failed to set default instance: %v\n", err)
 		}
 	}
+
+	// If OCA is selected for either plan or act mode, ensure the OCA auth listener is created
+	//if stateMap["planModeApiProvider"] == "oca" || stateMap["actModeApiProvider"] == "oca"{
+	auth.InitOcaAuthSubscriptions(ctx, taskManager.GetSystemRenderer())
+	//}
 	return nil
 }
 

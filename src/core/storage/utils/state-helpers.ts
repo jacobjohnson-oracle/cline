@@ -263,6 +263,7 @@ export async function readGlobalStateFromDisk(context: ExtensionContext): Promis
 		const difyBaseUrl = context.globalState.get<GlobalStateAndSettings["difyBaseUrl"]>("difyBaseUrl")
 		const ocaBaseUrl = context.globalState.get("ocaBaseUrl") as string | undefined
 		const ocaMode = context.globalState.get("ocaMode") as string | undefined
+		const ocaAuthMode = context.globalState.get("ocaAuthMode") as number | undefined
 		const openaiReasoningEffort =
 			context.globalState.get<GlobalStateAndSettings["openaiReasoningEffort"]>("openaiReasoningEffort")
 		const preferredLanguage = context.globalState.get<GlobalStateAndSettings["preferredLanguage"]>("preferredLanguage")
@@ -567,6 +568,7 @@ export async function readGlobalStateFromDisk(context: ExtensionContext): Promis
 			ocaBaseUrl,
 			minimaxApiLine,
 			ocaMode: ocaMode || "internal",
+			ocaAuthMode,
 			hicapModelId,
 			aihubmixBaseUrl,
 			aihubmixAppCode,

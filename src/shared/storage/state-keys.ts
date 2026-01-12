@@ -125,6 +125,7 @@ export interface Settings {
 	ocaBaseUrl: string | undefined
 	minimaxApiLine: string | undefined
 	ocaMode: string | undefined
+	ocaAuthMode: number | undefined
 	aihubmixBaseUrl: string | undefined
 	aihubmixAppCode: string | undefined
 	hooksEnabled: boolean

@@ -69,7 +69,7 @@ function useOcaAuth() {
 				if (unmountedRef.current) {
 					return
 				}
-				const nextUser = response?.user?.uid ? (response.user as OcaUserInfo) : null
+				const nextUser = response?.user?.uid ? response.user : null
 				setUser(nextUser)
 
 				if (!initialReceivedRef.current) {

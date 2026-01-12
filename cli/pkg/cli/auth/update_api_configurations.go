@@ -538,8 +538,9 @@ type BedrockOptionalFields struct {
 
 // OcaOptionalFields holds optional configuration fields for Oracle Code Assist
 type OcaOptionalFields struct {
-	BaseURL *string // Optional: Base URL
-	Mode    *string // Optional: Mode ("internal" or "external")
+	BaseURL  *string              // Optional: Base URL
+	Mode     *string              // Optional: Mode ("internal" or "external")
+	AuthMode *cline.OcaAuthMode   // Optional: Authentication mode for OCA (default: BROWSER)
 }
 
 // setBedrockOptionalFields sets optional Bedrock-specific fields in the API configuration
@@ -589,6 +590,9 @@ func setOcaOptionalFields(apiConfig *cline.ModelsApiConfiguration, fields *OcaOp
 	if fields.BaseURL != nil {
 		apiConfig.OcaBaseUrl = fields.BaseURL
 	}
+	if fields.AuthMode != nil {
+		apiConfig.OcaAuthMode = fields.AuthMode
+	}
 }
 
 // buildBedrockOptionalFieldMask builds field mask paths for Bedrock optional fields that have values
@@ -630,7 +634,7 @@ func buildBedrockOptionalFieldMask(fields *BedrockOptionalFields) []string {
 	return fieldPaths
 }
 
-// buildOcaOptionalFieldMask builds field mask paths for Bedrock optional fields that have values
+// buildOcaOptionalFieldMask builds field mask paths for OCA optional fields that have values
 func buildOcaOptionalFieldMask(fields *OcaOptionalFields) []string {
 	if fields == nil {
 		return nil
@@ -643,6 +647,9 @@ func buildOcaOptionalFieldMask(fields *OcaOptionalFields) []string {
 	}
 	if fields.BaseURL != nil {
 		fieldPaths = append(fieldPaths, "ocaBaseUrl")
+	}
+	if fields.AuthMode != nil {
+		fieldPaths = append(fieldPaths, "ocaAuthMode")
 	}
 
 	return fieldPaths

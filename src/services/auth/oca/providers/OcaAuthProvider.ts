@@ -31,6 +31,8 @@ export class OcaRefreshError extends Error {
 export class OcaAuthProvider {
 	// Map state -> { code_verifier, nonce, createdAt }
 	private static pkceStateMap: Map<string, PkceState> = new Map()
+	// Map device_code -> device auth info for polling
+	protected deviceCodes: Map<string, any> = new Map()
 
 	protected _config: OcaConfig
 
@@ -231,16 +233,15 @@ export class OcaAuthProvider {
 		controller.stateManager.setSecret("ocaRefreshToken", undefined)
 	}
 
-	async startDeviceAuth(controller: Controller): Promise<OcaDeviceAuthStartResponse> {
+	async requestDeviceAuth(controller: Controller): Promise<OcaDeviceAuthStartResponse> {
 		const ocaMode = controller.stateManager.getGlobalSettingsKey("ocaMode") || "internal"
 		const { idcs_url, client_id } = ocaMode === "internal" ? this._config.internal : this._config.external
-
-		const discovery = await axios.get(`${idcs_url}/.well-known/openid-configuration`, getAxiosSettings())
-		const deviceEndpoint = discovery.data.device_authorization_endpoint // Seems like this may not work... device auth endpoint settings are not in this object. may need to set url manually
+		const deviceEndpoint = `${idcs_url}/oauth2/v1/device` // device endpoint configuration is not listed in the /.well-known/openid-configuration so setting manually
 
 		const params = {
+			response_type: "device_code",
 			client_id,
-			scope: this._config[ocaMode].scopes,
+			scope: this._config[ocaMode as keyof OcaConfig].scopes,
 		}
 
 		const response = await axios.post(deviceEndpoint, new URLSearchParams(params), {
@@ -255,11 +256,11 @@ export class OcaAuthProvider {
 		})
 
 		return {
-			device_code: response.data.device_code,
-			user_code: response.data.user_code,
-			verification_uri: response.data.verification_uri,
-			verification_uri_complete: response.data.verification_uri_complete,
-			expires_in: response.data.expires_in,
+			deviceCode: response.data.device_code,
+			userCode: response.data.user_code,
+			verificationUri: response.data.verification_uri,
+			verificationUriComplete: response.data.verification_uri_complete,
+			expiresIn: response.data.expires_in,
 			interval: response.data.interval || 5,
 		}
 	}

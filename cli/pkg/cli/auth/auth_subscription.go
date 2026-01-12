@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
+	"github.com/cline/cli/pkg/cli/display"
 	"github.com/cline/cli/pkg/cli/global"
 	"github.com/cline/grpc-go/cline"
 )
@@ -127,4 +129,55 @@ func (l *AuthStatusListener) Stop() {
 // isAuthenticated checks if AuthState indicates successful authentication
 func isAuthenticated(state *cline.AuthState) bool {
 	return state != nil && state.User != nil
+}
+
+// Global OCA auth subscription singleton (CLI-only)
+var (
+	ocaAuthSubscriptionOnce sync.Once
+	ocaAuthSubscriptionErr  error
+)
+
+// InitOcaAuthSubscriptions initializes long-lived OCA auth status subscriptions for the CLI
+// This ensures Core-initiated re-auth (device code) is caught and rendered even outside wizard flows
+func InitOcaAuthSubscriptions(ctx context.Context, sysRenderer *display.SystemMessageRenderer) error {
+	var initErr error
+	ocaAuthSubscriptionOnce.Do(func() {
+		// Ensure the OCA auth listener exists and is subscribed
+		listener, err := GetOcaAuthListener(ctx)
+		if err != nil {
+			initErr = fmt.Errorf("failed to initialize OCA auth listener: %w", err)
+			return
+		}
+
+		// Start a goroutine to monitor for device auth and render it
+		go func() {
+			// Check for any cached device auth on startup
+			if sysRenderer != nil {
+				listener.PrintDeviceAuthIfPresent(0, sysRenderer)
+			}
+
+			// Monitor for new device auth events from the updates channel
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case state, ok := <-listener.updatesCh:
+					if !ok {
+						// Channel closed
+						return
+					}
+					// Check if this state has device auth
+					if state.DeviceAuth != nil && sysRenderer != nil {
+						_ = sysRenderer.RenderOcaDeviceAuth(state.DeviceAuth)
+					}
+				}
+			}
+		}()
+	})
+
+	if initErr != nil {
+		ocaAuthSubscriptionErr = initErr
+	}
+
+	return ocaAuthSubscriptionErr
 }

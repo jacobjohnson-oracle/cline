@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/cline/cli/pkg/cli/clerror"
+	"github.com/cline/grpc-go/cline"
 )
 
 // ErrorSeverity represents the severity level of an error
@@ -265,5 +266,24 @@ func (sr *SystemMessageRenderer) RenderCheckpoint(timestamp string, id int64) er
 	markdown := fmt.Sprintf("## [%s] Checkpoint created `%d`", timestamp, id)
 	rendered := sr.renderer.RenderMarkdown(markdown)
 	fmt.Printf(rendered)
+	return nil
+}
+
+// RenderOcaDeviceAuth renders OCA device authentication information
+func (sr *SystemMessageRenderer) RenderOcaDeviceAuth(resp *cline.OcaDeviceAuthStartResponse) error {
+	var parts []string
+	parts = append(parts, "### **[INFO]** OCA Device Authentication Required", "")
+
+	if resp.VerificationUriComplete != "" {
+		parts = append(parts, fmt.Sprintf("Visit: %s", resp.VerificationUriComplete))
+	} else {
+		parts = append(parts, fmt.Sprintf("Visit: %s", resp.VerificationUri))
+		parts = append(parts, fmt.Sprintf("Enter code: `%s`", resp.UserCode))
+	}
+	parts = append(parts, fmt.Sprintf("\nCode expires in: **%d** seconds", resp.ExpiresIn))
+
+	markdown := strings.Join(parts, "\n")
+	rendered := sr.renderer.RenderMarkdown(markdown)
+	fmt.Printf("\n%s\n", rendered)
 	return nil
 }

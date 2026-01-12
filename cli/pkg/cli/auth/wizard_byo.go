@@ -185,7 +185,7 @@ func (pw *ProviderWizard) handleAddOcaProvider() error {
 	}
 
 	// Step 2: Ensure OCA authentication
-	if err := ensureOcaAuthenticated(pw.ctx); err != nil {
+	if err := ensureOcaAuthenticated(pw.ctx, config.OcaAuthMode, pw.manager.GetSystemRenderer()); err != nil {
 		return fmt.Errorf("failed to authenticate with OCA: %w", err)
 	}
 

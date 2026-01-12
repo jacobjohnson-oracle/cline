@@ -442,6 +442,11 @@ enum ApiFormat {
   OPENAI_RESPONSES = 4;
 }
 
+enum OcaAuthMode {
+  BROWSER = 0;
+  DEVICE_CODE = 1;
+}
+
 // Model info for OpenAI-compatible models
 message OpenAiCompatibleModelInfo {
   optional int64 max_tokens = 1;
@@ -558,15 +563,16 @@ message ModelsApiConfiguration {
   optional string oca_api_key = 74;
   optional string oca_refresh_token = 75;
   optional string oca_mode = 76;
-  optional bool aws_use_global_inference = 77;
-  optional string minimax_api_key = 78;
-  optional string minimax_api_line = 79;
-  optional string hicap_model_id = 80;
-  optional string hicap_api_key = 81;
-  optional string aihubmix_api_key = 82;
-  optional string aihubmix_base_url = 83;
-  optional string aihubmix_app_code = 84;
-  optional string nous_research_api_key = 85;
+  optional OcaAuthMode oca_auth_mode = 77;
+  optional bool aws_use_global_inference = 78;
+  optional string minimax_api_key = 79;
+  optional string minimax_api_line = 80;
+  optional string hicap_model_id = 81;
+  optional string hicap_api_key = 82;
+  optional string aihubmix_api_key = 83;
+  optional string aihubmix_base_url = 84;
+  optional string aihubmix_app_code = 85;
+  optional string nous_research_api_key = 86;
 
   // Plan mode configurations
   optional ApiProvider plan_mode_api_provider = 100;

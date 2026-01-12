@@ -135,6 +135,7 @@ export interface ApiHandlerOptions {
 	ocaBaseUrl?: string
 	minimaxApiLine?: string
 	ocaMode?: string
+	ocaAuthMode?: number
 	aihubmixBaseUrl?: string
 	aihubmixAppCode?: string
 

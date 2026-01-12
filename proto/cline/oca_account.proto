@@ -20,11 +20,7 @@ service OcaAccountService {
   rpc ocaAccountLogoutClicked(EmptyRequest) returns (Empty);
 
   // Initiates device code authentication flow
-  rpc ocaStartDeviceAuth(EmptyRequest) returns (OcaDeviceAuthStartResponse);
-
-  // Polls for device authentication completion
-  rpc ocaPollDeviceAuth(OcaDeviceAuthPollRequest) returns (OcaAuthState);
-
+  rpc ocaStartDeviceAuth(EmptyRequest) returns (Empty);
 
   // Subscribe to auth status update events (when authentication state changes)
   rpc ocaSubscribeToAuthStatusUpdate(EmptyRequest) returns (stream OcaAuthState);
@@ -33,6 +29,8 @@ service OcaAccountService {
 message OcaAuthState {
   optional OcaUserInfo user = 1;
   optional string api_key = 2;
+  optional OcaDeviceAuthStartResponse device_auth = 3;
+  optional string error = 4;
 }
 
 // User's information
@@ -47,12 +45,7 @@ message OcaDeviceAuthStartResponse {
   string device_code = 1;
   string user_code = 2;
   string verification_uri = 3;
-  optional string verification_uri_complete = 4;
+  string verification_uri_complete = 4;
   int32 expires_in = 5;
   int32 interval = 6;
-}
-
-// Device code polling request
-message OcaDeviceAuthPollRequest {
-  string device_code = 1;
 }
